@@ -1,0 +1,10 @@
+[project]
+name = "RL_Learning"
+version = "0.0.1"
+dependencies = [
+  "gymnasium",
+  "pygame",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
