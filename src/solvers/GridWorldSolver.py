@@ -5,19 +5,19 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.ticker import FormatStrFormatter
 
-from src.agents.QLambdaLearner import QLambdaLearner
+from src.agents.QLambdaLearner import QLambdaLearningAgent
 
 class GridWorldSolver:
     def __init__(
             self, 
             environment: gym.Env, 
-            agent_class: type[QLambdaLearner],
+            agent_class: type[QLambdaLearningAgent],
             agent_kwargs: dict[str, Any],
             verbose: bool = False
             ):
         self.verbose = verbose
         self.environment = environment
-        self.agent = agent_class(environment, **agent_kwargs)
+        self.agent = agent_class(environment.observation_space, environment.action_space, **agent_kwargs)
 
     def train_one_epoch(self, start_obs: int):
         obs = start_obs

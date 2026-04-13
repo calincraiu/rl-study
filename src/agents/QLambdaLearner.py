@@ -1,7 +1,10 @@
+from typing import Any, Optional
 import numpy as np
 import gymnasium as gym
 
-class QLambdaLearner:
+from src.agents.Agent import Agent
+
+class QLambdaLearningAgent(Agent):
     """
     Backward-view Q-Learning with TD(λ)-equivalence. Maintains eligibility traces that are used to update all (encountered) Q values.
 
@@ -12,29 +15,31 @@ class QLambdaLearner:
     """
     def __init__(
         self,
-        env: gym.Env,
+        observation_space: gym.spaces.Space,
+        action_space: gym.spaces.Space,
         alpha: float = 0.2,
         gamma: float = 0.9,
         epsilon: float = 0.9,
         xi: float = 0.99,
-        lam: float = 0.8 # λ parameter ; Reflects how far back credit assignment goes
+        lam: float = 0.8, # λ parameter ; Reflects how far back credit assignment goes
+        name: Optional[str] = None
     ):
-        self.env = env
+        super().__init__(name if name else type(self).__name__)
         
-        # --- Num states in environment observation space
-        if isinstance(env.observation_space, gym.spaces.Discrete):
-            self.num_states = env.observation_space.n
-        elif isinstance(env.observation_space, gym.spaces.Box):
-            self.num_states = np.prod(env.observation_space.shape)
-        else:
-            # Fallback for complex spaces
-            raise ValueError(f"Unsupported observation space: {type(env.observation_space)}")
-        
-        # --- Num actions in environment
-        if isinstance(env.action_space, gym.spaces.Discrete):
-            self.num_actions = env.action_space.n
-        else:
-            self.num_actions = getattr(env.action_space, 'n', 0)
+        # --- Extract dimensions (fail fast if not discrete)
+        if not isinstance(observation_space, gym.spaces.Discrete):
+            raise ValueError(
+                f"QLambdaLearningAgent only supports Discrete observation spaces. "
+                f"Got {type(observation_space)}"
+            )
+        if not isinstance(action_space, gym.spaces.Discrete):
+            raise ValueError(
+                f"QLambdaLearningAgent only supports Discrete action spaces. "
+                f"Got {type(action_space)}"
+            )
+
+        self.num_states = observation_space.n
+        self.num_actions = action_space.n
 
         # --- Hyperparams
         self.alpha = alpha
@@ -49,8 +54,8 @@ class QLambdaLearner:
         self.cur_policy = np.random.randint(self.num_actions, size=self.num_states)
 
         # Keep track the of best policy. Note - Q always improves after every game, but the policy itself may oscilate due to stochasticity
-        self.best_policy: np.ndarray | None = None 
-        self.best_reward: float = -np.inf
+        self.__best_policy: np.ndarray | None = None 
+        self.__best_reward: float = -np.inf
 
     def reset_traces(self):
         self.e_trace.fill(0) # Resetting traces is required - as traces describe only what happened during ONE game / epoch
@@ -86,6 +91,9 @@ class QLambdaLearner:
     def update_episode(self, epoch_total_reward: float):
         self.epsilon *= self.xi # Decay exploration threhsold
         self.reset_traces()  # Reset traces every episode!
-        if epoch_total_reward >= self.best_reward: # Keep track of the best policy between episode updates
-            self.best_reward = epoch_total_reward
-            self.best_policy = self.cur_policy.copy()
+        if epoch_total_reward >= self.__best_reward: # Keep track of the best policy between episode updates
+            self.__best_reward = epoch_total_reward
+            self.__best_policy = self.cur_policy.copy()
+
+    def get_policy(self) -> Any:
+        return self.__best_policy

@@ -225,16 +225,25 @@ class GridWorldEnv(gym.Env):
         agent_pos = self.__agent_position
         assert agent_pos is not None
         window_size = self.metadata["pygame_window_size"]
+        aspect_ratio = float(self.num_rows) / float(self.num_cols)
+        window_width: int = 0
+        window_height: int = 0
+        if aspect_ratio > 1.0:
+            window_width = int(aspect_ratio * window_size)
+            window_height = window_size
+        else:
+            window_height = int(aspect_ratio * window_size)
+            window_width = window_size
 
         if self.__window is None and self.render_mode == "human":
             pygame.init()
             pygame.display.init()
-            self.__window = pygame.display.set_mode((window_size, window_size))
+            self.__window = pygame.display.set_mode((window_width, window_height))
 
         if self.__clock is None and self.render_mode == "human":
             self.__clock = pygame.time.Clock()
 
-        canvas = pygame.Surface((window_size, window_size))
+        canvas = pygame.Surface((window_width, window_height))
         canvas.fill((255, 255, 255))
 
         pix_square_size = window_size / max(self.num_rows, self.num_cols)
@@ -272,7 +281,7 @@ class GridWorldEnv(gym.Env):
                 canvas,
                 (0, 0, 0),
                 (x * pix_square_size, 0),
-                (x * pix_square_size, window_size),
+                (x * pix_square_size, window_height),
                 width=2,
             )
 
@@ -281,7 +290,7 @@ class GridWorldEnv(gym.Env):
                 canvas,
                 (0, 0, 0),
                 (0, y * pix_square_size),
-                (window_size, y * pix_square_size),
+                (window_width, y * pix_square_size),
                 width=2,
             )
 
