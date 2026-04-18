@@ -5,17 +5,20 @@ import numpy as np
 import gymnasium as gym
 import pygame
 
+
 class Actions(Enum):
     RIGHT = 0
     UP = 1
     LEFT = 2
     DOWN = 3
 
+
 class Cells(Enum):
     TILE = 0
     TARGET = 1
     PITFALL = 2
     WALL = 3
+
 
 class GridWorldEnv(gym.Env):
     metadata = {
@@ -49,10 +52,14 @@ class GridWorldEnv(gym.Env):
             self, 
             grid: Optional[np.ndarray] = None, 
             reward: Optional[dict] = None, 
-            render_mode: Optional[str] = None
+            render_mode: Optional[str] = None,
+            wind_p: float = 0.2, # probability that the 'wind' will blow the agent off-course to a lateral step
+            step_limit: int = 1000, # num steps permitted per game before truncation
             ):
         super().__init__()
 
+        self.wind_p = wind_p
+        
         self.grid = grid if grid is not None else self.__m_default_grid
         self.rewards: dict = reward if reward is not None else self.__m_default_reward
         self.num_rows, self.num_cols = self.grid.shape
@@ -83,13 +90,16 @@ class GridWorldEnv(gym.Env):
         # Agent
         self.__agent_position: Optional[np.ndarray] = None
 
+        # Truncation condition
+        self.__step_limit = step_limit
+        self.__current_step = 0
+
         # Additional information (used for debugging, not training)
         self.__target_position: np.ndarray = np.argwhere(self.grid == Cells.TARGET.value)[0]
 
         # Environment rendering
         assert render_mode is None or render_mode in self.metadata["render_modes"]
         self.render_mode = render_mode
-
         
         # If human-rendering is used, `self.window` will be a reference
         # to the window that we draw to. `self.clock` will be a clock that is used
@@ -155,6 +165,9 @@ class GridWorldEnv(gym.Env):
             agent_start_position = options.get("agent_start_position", None)
         self.__set_agent_position(agent_start_position)
 
+        # --- Truncation condition
+        self.__current_step = 0
+
         # --- Rendering
         if self.render_mode == "human":
             self.render()
@@ -175,8 +188,19 @@ class GridWorldEnv(gym.Env):
         if isinstance(action, Actions):
             action = action.value # get int from Actions
 
+        # --- Stochastic Mechanic (Wind) ---
+        # Roll for wind: 0 = No wind, 1 = Left wind, 2 = Right wind
+        if self.np_random.random() < self.wind_p:
+            # 50/50 chance to blow left or right relative to intended direction
+            if self.np_random.random() < 0.5:
+                actual_action = (action + 1) % 4  # Relative Left
+            else:
+                actual_action = (action - 1) % 4  # Relative Right
+        else:
+            actual_action = action
+
         # Map the discrete action (0-3) to a movement direction
-        direction = self.__action_to_direction[action]
+        direction = self.__action_to_direction[actual_action]
 
         # Update agent position, ensuring it stays within grid bounds
         # np.clip prevents the agent from walking off the edge
@@ -197,10 +221,8 @@ class GridWorldEnv(gym.Env):
         self.__set_agent_position(new_agent_position)
 
         # --- Truncation (optional)
-
-        # We don't use truncation in this simple environment
-        # (could add a step limit here if desired)
-        truncated = False
+        truncated = self.__current_step >= self.__step_limit
+        self.__current_step += 1
 
         # --- Assign reward
         reward = self.rewards[cell_type]
@@ -214,6 +236,13 @@ class GridWorldEnv(gym.Env):
         info = self.__get_info()
 
         return observation, reward, terminated, truncated, info
+    
+    def get_max_abs_reward(self) -> float:
+        """
+        Get the maximum absolut reward value from the environment's reward function.
+        This is useful for doing reward scaling so function-approximation agents don't have exploding gradients.
+        """
+        return np.max(np.abs(list(self.rewards.values())))
     
     def render(self):
         if self.render_mode == "rgb_array":

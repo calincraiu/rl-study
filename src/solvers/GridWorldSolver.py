@@ -5,19 +5,23 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.ticker import FormatStrFormatter
 
-from src.agents.QLambdaLearner import QLambdaLearningAgent
+from src.agents.Agent import Agent
 
 class GridWorldSolver:
     def __init__(
             self, 
             environment: gym.Env, 
-            agent_class: type[QLambdaLearningAgent],
+            agent_class: type[Agent],
             agent_kwargs: dict[str, Any],
             verbose: bool = False
             ):
         self.verbose = verbose
         self.environment = environment
-        self.agent = agent_class(environment.observation_space, environment.action_space, **agent_kwargs)
+        self.agent = agent_class(
+            observation_space=environment.observation_space, 
+            action_space=environment.action_space, 
+            **agent_kwargs
+            )
 
     def train_one_epoch(self, start_obs: int):
         obs = start_obs
@@ -27,11 +31,13 @@ class GridWorldSolver:
         while not done:
             action = self.agent.actuate(obs)
             next_obs, reward, terminated, truncated, info = self.environment.step(action)
+
             self.agent.percept(
                 s=obs, 
                 a=int(action), 
                 s_prime=next_obs, 
-                r=float(reward)
+                r=float(reward),
+                done=bool(terminated or truncated)
             )
             reward_game += float(reward)
 
@@ -67,7 +73,7 @@ class GridWorldSolver:
             ):
         fig, axes = plt.subplots(2, 1, figsize=(5, 4), dpi=dpi, sharex='all')
         axes[0].plot(np.arange(len(total_reward_history)), total_reward_history,
-                        alpha=0.7, color='#d62728', label=r'$\xi$ = ' + f'{self.agent.xi}')
+                        alpha=0.7, color='#d62728', label=r'$\xi$ = ' + f'{getattr(self.agent, "xi", "unspecified_xi")}')
         axes[0].set_ylabel('Total rewards')
         axes[0].legend(loc='best')
         axes[1].plot(np.arange(len(reward_history)), reward_history, marker='o', markersize=2,

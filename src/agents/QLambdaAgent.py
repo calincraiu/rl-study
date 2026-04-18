@@ -4,7 +4,8 @@ import gymnasium as gym
 
 from src.agents.Agent import Agent
 
-class QLambdaLearningAgent(Agent):
+
+class QLambdaAgent(Agent):
     """
     Backward-view Q-Learning with TD(λ)-equivalence. Maintains eligibility traces that are used to update all (encountered) Q values.
 
@@ -24,7 +25,7 @@ class QLambdaLearningAgent(Agent):
         lam: float = 0.8, # λ parameter ; Reflects how far back credit assignment goes
         name: Optional[str] = None
     ):
-        super().__init__(name if name else type(self).__name__)
+        super().__init__(name=name if name else type(self).__name__)
         
         # --- Extract dimensions (fail fast if not discrete)
         if not isinstance(observation_space, gym.spaces.Discrete):
@@ -60,7 +61,7 @@ class QLambdaLearningAgent(Agent):
     def reset_traces(self):
         self.e_trace.fill(0) # Resetting traces is required - as traces describe only what happened during ONE game / epoch
 
-    def percept(self, s: int, a: int, s_prime: int, r: float):
+    def percept(self, s: int, a: int, s_prime: int, r: float, **kwargs):
         # Increase trace for visited (s, a)
         self.e_trace[s, a] += 1
         

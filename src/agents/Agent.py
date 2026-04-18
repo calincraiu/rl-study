@@ -1,6 +1,9 @@
 from typing import Any
 from abc import ABC, abstractmethod
 
+import gymnasium as gym
+
+
 class Agent(ABC):
     """
     Abstract base class for Agent / Learner within the RL framework.
@@ -9,11 +12,11 @@ class Agent(ABC):
     name: str
     """Name of the agent."""
 
-    def __init__(self, name: str):
-        self.name=name
+    def __init__(self, **kwargs):
+        self.name=kwargs.get("name", "Agent")
 
     @abstractmethod
-    def percept(self, s: Any, a: Any, s_prime: Any, r: Any) -> None:
+    def percept(self, s: Any, a: Any, s_prime: Any, r: Any, **kwargs) -> None:
         """
         Percept base method. Used for updating agent state (e.g. value function) during training.
 
@@ -22,6 +25,7 @@ class Agent(ABC):
             - a (Any) : Action that the agent took
             - s_prime (Any) : New state / observation
             - r (Any) : Reward obtained from the environment
+            - kwargs : Any other arguments.
         """
         pass
 
