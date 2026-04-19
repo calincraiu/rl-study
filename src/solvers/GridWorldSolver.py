@@ -6,15 +6,20 @@ import matplotlib.pyplot as plt
 from matplotlib.ticker import FormatStrFormatter
 
 from src.agents.Agent import Agent
+from src.solvers.Solver import Solver
 
-class GridWorldSolver:
+
+class GridWorldSolver(Solver):
     def __init__(
             self, 
             environment: gym.Env, 
             agent_class: type[Agent],
             agent_kwargs: dict[str, Any],
-            verbose: bool = False
+            verbose: bool = False,
+            **kwargs
             ):
+        super.__init__(**kwargs)
+
         self.verbose = verbose
         self.environment = environment
         self.agent = agent_class(
@@ -25,7 +30,7 @@ class GridWorldSolver:
 
     def train_one_epoch(self, start_obs: int):
         obs = start_obs
-        reward_game = 0
+        reward_game: float = 0
         done = False
 
         while not done:
