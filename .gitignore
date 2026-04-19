@@ -11,3 +11,10 @@ __pycache__/
 
 # Build files
 build/
+
+# Runtime
+runtime/
+
+# wandb
+wandb/
+tea_debug.log

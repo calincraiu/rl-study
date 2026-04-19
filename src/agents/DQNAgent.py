@@ -128,9 +128,11 @@ class DQNAgent(Agent):
         # --- Replay buffer ---
         self.buffer = ReplayBuffer(buffer_capacity)
 
-        # --- Counters ---
-        self.steps_done = 0
-        self.episode_count = 0
+        # --- Counters & Trackers ---
+        self.episode_count: int = 0
+        self.latest_loss: float = 0.0
+        self.latest_max_q: float = 0.0
+        # steps_done comes from base class
 
     def _get_q_values(self, s: Any) -> torch.Tensor:
         """
@@ -193,7 +195,7 @@ class DQNAgent(Agent):
         done = torch.tensor(done, dtype=torch.float32, device=device).unsqueeze(1)
 
         # --- Current Q-values ---
-        q_values = self.q_net(s).gather(1, a)
+        q_values: torch.Tensor = self.q_net(s).gather(1, a)
 
         # --- Target Q-values ---
         with torch.no_grad():
@@ -206,11 +208,12 @@ class DQNAgent(Agent):
         # --- Optimize ---
         self.optimizer.zero_grad(set_to_none=True)  # faster than zero_grad()
         loss.backward()
-
-        # Gradient clipping (stabilizes training)
-        torch.nn.utils.clip_grad_norm_(self.q_net.parameters(), 1.0)
-
+        torch.nn.utils.clip_grad_norm_(self.q_net.parameters(), 1.0) # Gradient clipping (stabilizes training)
         self.optimizer.step()
+
+        # --- Track metrics ---
+        self.latest_loss = loss.item()
+        self.latest_max_q = q_values.max().item()
 
     def update_episode(self, **kwargs: Any) -> None:
         """
@@ -233,3 +236,10 @@ class DQNAgent(Agent):
         Get the agent's policy.
         """
         return self.q_net
+
+    def get_metrics(self) -> dict:
+        return {
+            "train/epsilon": self.epsilon,
+            "train/loss": self.latest_loss,
+            "train/max_q": self.latest_max_q,
+        }

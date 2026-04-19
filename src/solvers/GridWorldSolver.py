@@ -1,9 +1,11 @@
 from typing import Any, Optional
+
 from tqdm import tqdm
 import gymnasium as gym
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.ticker import FormatStrFormatter
+import wandb
 
 from src.agents.Agent import Agent
 from src.solvers.Solver import Solver
@@ -18,7 +20,7 @@ class GridWorldSolver(Solver):
             verbose: bool = False,
             **kwargs
             ):
-        super.__init__(**kwargs)
+        super().__init__(name=type(self).__name__, **kwargs)
 
         self.verbose = verbose
         self.environment = environment
@@ -27,48 +29,59 @@ class GridWorldSolver(Solver):
             action_space=environment.action_space, 
             **agent_kwargs
             )
+        self.__agent_kwargs = agent_kwargs # Used for logging
 
-    def train_one_epoch(self, start_obs: int):
-        obs = start_obs
-        reward_game: float = 0
-        done = False
+    def train(self, n_epochs: int) -> None:
+        # Init wandb for logging
+        wandb.init(
+            project=type(self).__name__,
+            config={
+                "n_epochs": n_epochs,
+                "agent_type": self.agent.__class__.__name__,
+                **self.__agent_kwargs
+            }
+        )
 
-        while not done:
-            action = self.agent.actuate(obs)
-            next_obs, reward, terminated, truncated, info = self.environment.step(action)
-
-            self.agent.percept(
-                s=obs, 
-                a=int(action), 
-                s_prime=next_obs, 
-                r=float(reward),
-                done=bool(terminated or truncated)
-            )
-            reward_game += float(reward)
-
-            obs = next_obs # Update state
-            if terminated or truncated:
-                done = True
-
-        # Apply intra-episode update actions (like epsilon decay)
-        self.agent.update_episode(epoch_total_reward=reward_game)
-        return reward_game
-
-    def train(self, n_epochs: int) -> tuple[int, np.ndarray, np.ndarray]:
-        reward_history = np.zeros(n_epochs)
-        total_reward_history = np.zeros(n_epochs)
-        total_reward = 0
-
+        # Iterate epochs
         for i in tqdm(range(n_epochs), desc="Epoch", disable=(not self.verbose)):
             obs, info = self.environment.reset()
-            reward_episode = self.train_one_epoch(start_obs=obs)
-            total_reward += reward_episode
-            reward_history[i] = reward_episode
-            total_reward_history[i] = total_reward
-        if self.verbose:
-            print(f'Total reward = {total_reward}')
+            done = False
+            
+            # Iterate steps in epoch
+            while not done:
+                action = self.agent.actuate(obs)
+                next_obs, reward, terminated, truncated, info = self.environment.step(action)
 
-        return n_epochs, reward_history, total_reward_history
+                self.agent.percept(
+                    s=obs, 
+                    a=int(action), 
+                    s_prime=next_obs, 
+                    r=float(reward),
+                    done=bool(terminated or truncated)
+                )
+                obs = next_obs # Update state
+                if terminated or truncated:
+                    done = True
+
+                    # Log Environment Metrics (Automatically computed by Gymnasium Wrapper)
+                    if "episode" in info:
+                        wandb.log({
+                            "env/episode_return": info["episode"]["r"],
+                            "env/episode_length": info["episode"]["l"],
+                            # Success metric: Assuming 1.0 is the reward for the target cell
+                            "env/success": 1 if reward == 1.0 else 0 
+                        }, step=self.agent.steps_done)
+
+            # Apply intra-episode update actions (like epsilon decay)
+            self.agent.update_episode()
+
+            # Log Agent/Training Metrics at the end of every episode
+            metrics = self.agent.get_metrics()
+            metrics["epoch"] = i # Add solver-level info
+            wandb.log(metrics, step=self.agent.steps_done)
+
+        # Close the wandb run
+        wandb.finish()
 
     def plot_train_history(
             self, 

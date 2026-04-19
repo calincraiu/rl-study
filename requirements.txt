@@ -6,6 +6,8 @@ matplotlib
 pygame
 optuna
 gymnasium
+gymnasium[other]
 wandb
+nbformat
 torch --index-url https://download.pytorch.org/whl/cu130
 torchvision --index-url https://download.pytorch.org/whl/cu130

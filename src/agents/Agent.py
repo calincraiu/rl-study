@@ -12,8 +12,12 @@ class Agent(ABC):
     name: str
     """Name of the agent."""
 
+    steps_done: int
+    """Steps performed by the agent."""
+
     def __init__(self, **kwargs):
         self.name=kwargs.get("name", "Agent")
+        self.steps_done = 0
 
     @abstractmethod
     def percept(self, s: Any, a: Any, s_prime: Any, r: Any, **kwargs) -> None:
@@ -55,3 +59,11 @@ class Agent(ABC):
         Used for getting the agent's policy for external solvers. This can serve as a best-policy retirever.
         """
         pass
+
+    @abstractmethod
+    def get_metrics(self) -> dict:
+        """
+        Returns a dictionary of internal metrics for logging.
+        Override this in subclasses to log specific data.
+        """
+        return {}
