@@ -15,9 +15,13 @@ class Agent(ABC):
     steps_done: int
     """Steps performed by the agent."""
 
+    episode_count: int
+    """Number of episodes experienced by the agent."""
+
     def __init__(self, **kwargs):
         self.name=kwargs.get("name", "Agent")
         self.steps_done = 0
+        self.episode_count = 0
 
     @abstractmethod
     def percept(self, s: Any, a: Any, s_prime: Any, r: Any, **kwargs) -> None:

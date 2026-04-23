@@ -9,9 +9,24 @@ import wandb
 
 from src.agents.Agent import Agent
 from src.solvers.Solver import Solver
+from src.environments.Gridworld import GridWorldEnv
 
 
 class GridWorldSolver(Solver):
+
+    __environment_options: dict = {
+        "agent_start_position_strategy" : "curriculum",
+        "position_strategy_params" : {
+            "curriculum_distance" : 1,
+            "curriculum_threshold" : 0.8
+        }
+    }
+    """
+    These are the options passed as additional configuration to the environment reset function.
+    This can contain information about the type of strategy to be used for positioning the agent (random, curriculum, fixed),
+    and additional parameters.
+    """
+
     def __init__(
             self, 
             environment: gym.Env, 
@@ -41,13 +56,29 @@ class GridWorldSolver(Solver):
                 **self.__agent_kwargs
             }
         )
+        env_max_distance_from_target: int = 1
+        if hasattr(self.environment.unwrapped, "max_distance_from_target"):
+            env_max_distance_from_target: int = getattr(self.environment.unwrapped, "max_distance_from_target")
+        else:
+            raise Exception("The GridWorld environment should have a max_distance_from_target attribute!")
 
         # Iterate epochs
         for i in tqdm(range(n_epochs), desc="Epoch", disable=(not self.verbose)):
-            obs, info = self.environment.reset()
+            
+            # --- Agent Placement ---
+            # Create a curriculum distance - a random placement of the agent within a certain maximum distance of the target
+            # This starts very close to the target at early epochs and gradually increases. This is meant to show the agent
+            # simple cases first, and gradually increase difficulty. This is meant to help provide a positive reward signal
+            # early on in the training - complete random initial positioning might lead to the agent never (or very late in
+            # the epochs) encounter the target.
+            curriculum_distance = max(1, int(env_max_distance_from_target * (i / n_epochs))) # minimum 1 - never start on the actual target
+            self.__environment_options["position_strategy_params"]["curriculum_distance"] = curriculum_distance
+
+            # --- Environment Reset ---
+            obs, info = self.environment.reset(options=self.__environment_options)
             done = False
             
-            # Iterate steps in epoch
+            # --- Iterate steps in epoch ---
             while not done:
                 action = self.agent.actuate(obs)
                 next_obs, reward, terminated, truncated, info = self.environment.step(action)
@@ -82,25 +113,3 @@ class GridWorldSolver(Solver):
 
         # Close the wandb run
         wandb.finish()
-
-    def plot_train_history(
-            self, 
-            reward_history: np.ndarray, 
-            total_reward_history: np.ndarray,
-            dpi: int = 120
-            ):
-        fig, axes = plt.subplots(2, 1, figsize=(5, 4), dpi=dpi, sharex='all')
-        axes[0].plot(np.arange(len(total_reward_history)), total_reward_history,
-                        alpha=0.7, color='#d62728', label=r'$\xi$ = ' + f'{getattr(self.agent, "xi", "unspecified_xi")}')
-        axes[0].set_ylabel('Total rewards')
-        axes[0].legend(loc='best')
-        axes[1].plot(np.arange(len(reward_history)), reward_history, marker='o', markersize=2,
-                        alpha=0.7, color='#2ca02c', linestyle='none')
-        axes[1].set_xlabel('Episode')
-        axes[1].set_ylabel('Reward from\na single game')
-        # axes[1].set_ylim(-1000, 100)
-        axes[1].xaxis.set_major_formatter(FormatStrFormatter('%.0f'))
-        axes[0].grid(axis='x')
-        axes[1].grid(axis='x')
-        plt.tight_layout()
-        plt.show()

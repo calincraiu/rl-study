@@ -1,1 +1,1 @@
-from src.environments.gridworld import GridWorldEnv
+from src.environments.Gridworld import GridWorldEnv

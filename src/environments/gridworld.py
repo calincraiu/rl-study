@@ -1,6 +1,8 @@
 from enum import Enum
 from typing import Optional, Any, Union
+from collections import deque
 
+import math
 import numpy as np
 import gymnasium as gym
 import pygame
@@ -48,6 +50,13 @@ class GridWorldEnv(gym.Env):
         Cells.PITFALL.value: (255, 0, 0),
     }
 
+    __action_to_direction = {
+        Actions.UP.value: np.array([-1, 0]),
+        Actions.DOWN.value: np.array([1, 0]),
+        Actions.LEFT.value: np.array([0, -1]),
+        Actions.RIGHT.value: np.array([0, 1]),
+    }
+
     def __init__(
             self, 
             grid: Optional[np.ndarray] = None, 
@@ -63,6 +72,10 @@ class GridWorldEnv(gym.Env):
         self.grid = grid if grid is not None else self.__m_default_grid
         self.rewards: dict = reward if reward is not None else self.__m_default_reward
         self.num_rows, self.num_cols = self.grid.shape
+        
+        self.__target_position: np.ndarray = np.argwhere(self.grid == Cells.TARGET.value)[0] # Compute target position for distance map
+        self.distance_map = self.__compute_distance_map() # Distance map (BFS) for agent position scheduling
+        self.max_distance_from_target = self.max_distance_from_target = np.max(self.distance_map[np.isfinite(self.distance_map)]) # Maximum distance from the goal from anywhere on the grid (taking into account obstacles)
 
         # Observation space - can be multipart - here it includes only the agent position
         # But it can include any observations that we deep relevant. Examples: a field of vision,
@@ -79,13 +92,7 @@ class GridWorldEnv(gym.Env):
         )
 
         # Action space
-        self.action_space = gym.spaces.Discrete(4)
-        self.__action_to_direction = {
-            Actions.UP.value: np.array([-1, 0]),
-            Actions.DOWN.value: np.array([1, 0]),
-            Actions.LEFT.value: np.array([0, -1]),
-            Actions.RIGHT.value: np.array([0, 1]),
-        }
+        self.action_space = gym.spaces.Discrete(len(self.__action_to_direction))
 
         # Agent
         self.__agent_position: Optional[np.ndarray] = None
@@ -93,9 +100,6 @@ class GridWorldEnv(gym.Env):
         # Truncation condition
         self.__step_limit = step_limit
         self.__current_step = 0
-
-        # Additional information (used for debugging, not training)
-        self.__target_position: np.ndarray = np.argwhere(self.grid == Cells.TARGET.value)[0]
 
         # Environment rendering
         assert render_mode is None or render_mode in self.metadata["render_modes"]
@@ -145,6 +149,28 @@ class GridWorldEnv(gym.Env):
             idx = np.random.randint(len(valid_positions)) # Random choice
             self.__agent_position = valid_positions[idx]
 
+    def __set_agent_position_by_curriculum(self, curriculum_distance: int, curriculum_threshold):
+        """
+        Set an agent position within a specific distance to the target.
+
+        Args:
+            curriculum_distance (int): Set the position of the agent randomly within curriculum_distance of the target.
+            curriculum_threshold (float): The threshold for deciding whether to use curriculum learning or random placement.
+                Higher threshold means more curriculum. Full curriculum learning may lead to overfitting.
+        """
+        if curriculum_threshold < 0.0: curriculum_threshold = 0.0
+        if curriculum_threshold > 1.0: curriculum_threshold = 1.0
+        if curriculum_distance < 0: curriculum_distance = 0
+        if curriculum_distance > self.max_distance_from_target: curriculum_distance = self.max_distance_from_target
+
+        if self.np_random.random() < curriculum_threshold: # curriculum
+            positions = self.__get_positions_within_distance(curriculum_distance)
+        else: # random / max
+            positions = self.__get_positions_within_distance(self.max_distance_from_target)
+
+        idx = self.np_random.integers(len(positions))
+        self.__agent_position = positions[idx]
+
     def reset(self, seed: Optional[int] = None, options: Optional[dict] = None) -> tuple[dict, dict]:
         """
         Start a new episode.
@@ -160,10 +186,21 @@ class GridWorldEnv(gym.Env):
         super().reset(seed=seed) # Must call this first to seed the random number generator
 
         # --- Agent placement
-        agent_start_position: Optional[np.ndarray] = None
         if options:
-            agent_start_position = options.get("agent_start_position", None)
-        self.__set_agent_position(agent_start_position)
+            agent_start_position_strategy: str = options.get("agent_start_position_strategy", "random")
+            position_strategy_params: dict = options.get("position_strategy_params", {})
+
+            if agent_start_position_strategy == "curriculum":
+                curriculum_distance = position_strategy_params.get("curriculum_distance", self.distance_map.max())
+                curriculum_threshold = position_strategy_params.get("curriculum_threshold", 0.8)
+                self.__set_agent_position_by_curriculum(curriculum_distance, curriculum_threshold)
+            elif agent_start_position_strategy == "fixed_position":
+                agent_fixed_position = position_strategy_params.get("agent_fixed_position", np.array([0, 0]))
+                self.__set_agent_position(agent_fixed_position)
+            else:
+                self.__set_agent_position() # random
+        else:
+            self.__set_agent_position() # no options -> random
 
         # --- Truncation condition
         self.__current_step = 0
@@ -243,6 +280,67 @@ class GridWorldEnv(gym.Env):
         This is useful for doing reward scaling so function-approximation agents don't have exploding gradients.
         """
         return np.max(np.abs(list(self.rewards.values())))
+    
+    from collections import deque
+
+    def __compute_distance_map(self) -> np.ndarray:
+        """
+        Compute shortest-path distance from every reachable tile to the goal.
+        Walls are treated as impassable.
+        
+        Returns:
+            np.ndarray of shape (rows, cols) with distances (inf if unreachable)
+        """
+        distances = np.full((self.num_rows, self.num_cols), np.inf)
+        visited = np.zeros_like(distances, dtype=bool)
+
+        queue = deque()
+        goal = tuple(self.__target_position)
+
+        # Start from goal
+        queue.append((goal, 0))
+        distances[goal] = 0
+        visited[goal] = True
+
+        while queue:
+            (r, c), dist = queue.popleft()
+
+            for direction in self.__action_to_direction.values():
+                nr, nc = r + direction[0], c + direction[1]
+
+                # Bounds check
+                if not (0 <= nr < self.num_rows and 0 <= nc < self.num_cols):
+                    continue
+
+                # Skip walls
+                if self.grid[nr, nc] == Cells.WALL.value:
+                    continue
+
+                if not visited[nr, nc]:
+                    visited[nr, nc] = True
+                    distances[nr, nc] = dist + 1
+                    queue.append(((nr, nc), dist + 1))
+
+        return distances
+    
+    def __get_positions_within_distance(self, max_distance: int) -> np.ndarray:
+        """
+        Get all valid positions within a given shortest-path distance from the goal.
+
+        Args:
+            max_distance (int): Maximum distance from goal
+
+        Returns:
+            np.ndarray of positions [[r, c], ...]
+        """
+        mask = (
+            (self.distance_map <= max_distance) & # is within distance
+            np.isfinite(self.distance_map) & # is finite distance (reachable)
+            (self.grid != Cells.WALL.value) & # is not a wall
+            (self.grid != Cells.PITFALL.value) & # is not a pitfall
+            (self.grid != Cells.TARGET.value) # is not the target itself
+        )
+        return np.argwhere(mask)
     
     def render(self):
         if self.render_mode == "rgb_array":

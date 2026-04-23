@@ -82,11 +82,12 @@ class DQNAgent(Agent):
         gamma: float = 0.99,
         epsilon: float = 1.0,
         xi: float = 0.995, # epsilon decay
+        warmup_episodes: int = 100, # warmup counter - number of episodes before xi gets enabled to start decaying epsilon (exporation threshold)
         r_scaling: float = 1.0, # reward scaling
         buffer_capacity: int = 100000,
         batch_size: int = 64,
-        target_update_freq: int = 20,
-        train_every_n: int = 1,
+        target_update_freq: int = 100,
+        train_every_n: int = 4,
         name: Optional[str] = None,
     ):
         super().__init__(name=name if name else type(self).__name__)
@@ -124,15 +125,16 @@ class DQNAgent(Agent):
         self.batch_size = batch_size
         self.target_update_freq = target_update_freq
         self.train_every_n = train_every_n
+        self.warmup_episodes = warmup_episodes
 
         # --- Replay buffer ---
         self.buffer = ReplayBuffer(buffer_capacity)
 
         # --- Counters & Trackers ---
-        self.episode_count: int = 0
         self.latest_loss: float = 0.0
         self.latest_max_q: float = 0.0
         # steps_done comes from base class
+        # episode_count comes from base class
 
     def _get_q_values(self, s: Any) -> torch.Tensor:
         """
@@ -220,7 +222,8 @@ class DQNAgent(Agent):
         Called at the end of each episode.
         """
         # Decay exploration
-        self.epsilon = max(0.01, self.epsilon * self.xi)
+        decay_factor = self.xi if self.episode_count >= self.warmup_episodes else 1.0 # warmup
+        self.epsilon = max(0.01, self.epsilon * decay_factor)
 
         # Train on a batch (you can call this more frequently if you prefer)
         self._train_step()
