@@ -9,7 +9,7 @@ import wandb
 
 from src.agents.Agent import Agent
 from src.solvers.Solver import Solver
-from src.environments.Gridworld import GridWorldEnv
+from src.environments.Gridworld import Cells
 
 
 class GridWorldSolver(Solver):
@@ -88,7 +88,9 @@ class GridWorldSolver(Solver):
                     a=int(action), 
                     s_prime=next_obs, 
                     r=float(reward),
-                    done=bool(terminated or truncated)
+                    done=bool(terminated) # Not including truncation here, because I don't want the model to treat whetever state it ends on as a terminal state
+                    # If the run gets truncated and the model did not reach a terminal time, it may just learn that long exploration is bad, since it gets 
+                    # penalized on every step
                 )
                 obs = next_obs # Update state
                 if terminated or truncated:
@@ -99,8 +101,8 @@ class GridWorldSolver(Solver):
                         wandb.log({
                             "env/episode_return": info["episode"]["r"],
                             "env/episode_length": info["episode"]["l"],
-                            # Success metric: Assuming 1.0 is the reward for the target cell
-                            "env/success": 1 if reward == 1.0 else 0 
+                            # Success metric: Reward for the target cell has been achieved
+                            "env/success": 1 if reward == getattr(self.environment.unwrapped, "rewards")[Cells.TARGET.value] else 0 
                         }, step=self.agent.steps_done)
 
             # Apply intra-episode update actions (like epsilon decay)
