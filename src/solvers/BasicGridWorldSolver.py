@@ -1,11 +1,7 @@
-from typing import Any, Optional
-from collections import deque
+from typing import Any
 
 from tqdm import tqdm
 import gymnasium as gym
-import numpy as np
-import matplotlib.pyplot as plt
-from matplotlib.ticker import FormatStrFormatter
 import wandb
 
 from src.agents.Agent import Agent
@@ -13,20 +9,7 @@ from src.solvers.Solver import Solver
 from src.environments.Gridworld import Cells
 
 
-class GridWorldSolver(Solver):
-
-    __environment_options: dict = {
-        "agent_start_position_strategy" : "curriculum",
-        "position_strategy_params" : {
-            "curriculum_distance" : 2,
-            "curriculum_threshold" : 0.8
-        }
-    }
-    """
-    These are the options passed as additional configuration to the environment reset function.
-    This can contain information about the type of strategy to be used for positioning the agent (random, curriculum, fixed),
-    and additional parameters.
-    """
+class BasicGridWorldSolver(Solver):
 
     def __init__(
             self, 
@@ -47,11 +30,7 @@ class GridWorldSolver(Solver):
             )
         self.__agent_kwargs = agent_kwargs # Used for logging
 
-    def train(self, n_epochs: int, tracking_window: int = 100) -> None:
-        # Initialize Curriculum State - this is to track how curriculum should progress - not on epoch, but on success rate at current curriculum difficulty
-        success_window = deque(maxlen=tracking_window)  # Tracks the last 100 episodes
-        env_max_dist = getattr(self.environment.unwrapped, "max_distance_from_target")
-
+    def train(self, n_epochs: int) -> None:
         # Init wandb for logging
         wandb.init(
             project=type(self).__name__,
@@ -64,16 +43,9 @@ class GridWorldSolver(Solver):
 
         # Iterate epochs
         for i in tqdm(range(n_epochs), desc="Epoch", disable=(not self.verbose)):
-            
-            # --- Agent Placement ---
-            # Using curriculum - here, a random placement of the agent within a certain maximum distance of the target
-            # This starts very close to the target at early epochs and gradually increases. This is meant to show the agent
-            # simple cases first, and gradually increase difficulty. This is meant to help provide a positive reward signal
-            # early on in the training - complete random initial positioning might lead to the agent never (or very late in
-            # the epochs) encounter the target.
 
             # --- Environment Reset ---
-            obs, info = self.environment.reset(options=self.__environment_options)
+            obs, info = self.environment.reset(options=None)
             done: bool = False
             episode_success: int = 0
             
@@ -102,24 +74,7 @@ class GridWorldSolver(Solver):
                             "env/episode_return": info["episode"]["r"],
                             "env/episode_length": info["episode"]["l"],
                             "env/success": episode_success,
-                            "env/curriculum_dist": self.__environment_options["position_strategy_params"]["curriculum_distance"],
                         }, step=self.agent.steps_done)
-
-            # Update success window for curriculum
-            success_window.append(episode_success)
-            success_rate = sum(success_window) / len(success_window) if success_window else 0 # success rate within window of last n episodes
-
-            # Curriculul update logic: move the goalpost only on success
-            # If agent is doing great (>80% success), increase distance
-            if len(success_window) == tracking_window and success_rate > 0.8:
-                if self.__environment_options["position_strategy_params"]["curriculum_distance"] < env_max_dist:
-                    self.__environment_options["position_strategy_params"]["curriculum_distance"] += 1
-                    success_window.clear() # Reset window for the new challenge level
-            # If agent is failing badly (<10% success), retreat slightly
-            elif len(success_window) == tracking_window and success_rate < 0.1:
-                if self.__environment_options["position_strategy_params"]["curriculum_distance"] > 2:
-                    self.__environment_options["position_strategy_params"]["curriculum_distance"] -= 1
-                    success_window.clear()
 
             # Apply intra-episode update actions (like epsilon decay)
             self.agent.update_episode()

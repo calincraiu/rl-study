@@ -64,12 +64,14 @@ class GridWorldEnv(gym.Env):
             render_mode: Optional[str] = None,
             wind_p: float = 0.2, # probability that the 'wind' will blow the agent off-course to a lateral step
             step_limit: int = 1000, # num steps permitted per game before truncation
+            pad_type: Cells = Cells.WALL # pad grid boundary with this tile type
             ):
         super().__init__()
 
         self.wind_p = wind_p
         
-        self.grid = grid if grid is not None else self.__m_default_grid
+        grid = grid if grid is not None else self.__m_default_grid
+        self.grid = self.__pad_grid(grid, pad_type)
         self.rewards: dict = reward if reward is not None else self.__m_default_reward
         self.num_rows, self.num_cols = self.grid.shape
         
@@ -112,6 +114,10 @@ class GridWorldEnv(gym.Env):
         # first time.
         self.__window = None
         self.__clock = None
+
+    def __pad_grid(self, grid: np.ndarray, pad_type: Cells) -> np.ndarray:
+        """Pads the grid with a specified cell type."""
+        return np.pad(grid, constant_values=pad_type.value, pad_width=1)
 
     def __get_obs(self) -> dict:
         """
@@ -281,8 +287,6 @@ class GridWorldEnv(gym.Env):
         """
         return np.max(np.abs(list(self.rewards.values())))
     
-    from collections import deque
-
     def __compute_distance_map(self) -> np.ndarray:
         """
         Compute shortest-path distance from every reachable tile to the goal.
@@ -450,3 +454,62 @@ class DiscreteGridWorldWrapper(gym.ObservationWrapper):
         # Convert {"agent": [r, c]} -> single integer index
         row, col = obs["agent"]
         return int(row * self.get_wrapper_attr("num_cols") + col)
+    
+
+class NormalizedCoordWrapper(gym.ObservationWrapper):
+    def __init__(self, env: gym.Env):
+        super().__init__(env)
+        # Define the new space: 2 coordinates (row, col) normalized between 0 and 1
+        self.observation_space = gym.spaces.Box(
+            low=0.0, high=1.0, shape=(2,), dtype=np.float32
+        )
+        # Access unwrapped env for grid dimensions
+        self.rows = self.get_wrapper_attr("num_rows")
+        self.cols = self.get_wrapper_attr("num_cols")
+
+    def observation(self, obs):
+        # Extract [row, col] from the "agent" dict
+        r, c = obs["agent"]
+        # Normalize to [0, 1] range for better MLP performance
+        return np.array([r / (self.rows - 1), c / (self.cols - 1)], dtype=np.float32)
+    
+    
+class PatienceWrapper(gym.Wrapper):
+    """
+    Truncates the episode if the agent remains in the exact same position 
+    for a specified number of consecutive steps.
+    """
+    def __init__(self, env: gym.Env, patience: int = 5):
+        super().__init__(env)
+        self.patience = patience
+        self.stuck_counter = 0
+        self.last_position: Any = None
+
+    def reset(self, **kwargs):
+        # Reset the environment and clear our tracking variables
+        obs, info = self.env.reset(**kwargs)
+        self.stuck_counter = 0
+        
+        # Store the initial position. 
+        # We assume this is applied to the base GridWorldEnv where obs is a Dict
+        self.last_position = obs["agent"].copy() 
+        return obs, info
+
+    def step(self, action):
+        obs, reward, terminated, truncated, info = self.env.step(action)
+        
+        current_position = obs["agent"]
+        
+        # Check if the agent actually moved
+        if np.array_equal(current_position, self.last_position):
+            self.stuck_counter += 1
+        else:
+            self.stuck_counter = 0
+            self.last_position = current_position.copy()
+            
+        # If the agent has been stuck for too long, truncate the episode
+        if self.stuck_counter >= self.patience:
+            truncated = True
+            info["patience_exceeded"] = True # Optional: Good for debugging/logging
+            
+        return obs, reward, terminated, truncated, info
