@@ -152,13 +152,18 @@ class DQNAgent(Agent):
 
         # --- Push to PER Buffer ---
         self.buffer.push(transition, max_priority)
-
-        # --- Housekeeping ---
-        self.steps_done += 1
         
         # Train every n steps (once the buffer has enough elements for a batch)
         if len(self.buffer) >= self.batch_size and self.steps_done % self.train_every_n == 0:
             self._train_step()
+
+        # --- Update target ---
+        # Periodically copy Q-network -> target network. Frequency based on num steps done
+        if self.steps_done % self.target_update_freq == 0:
+            self.target_net.load_state_dict(self.q_net.state_dict())
+
+        # --- Housekeeping ---
+        self.steps_done += 1
 
     def _train_step(self) -> None:
         if len(self.buffer) < self.batch_size:
@@ -233,10 +238,6 @@ class DQNAgent(Agent):
 
         # Train on a batch (you can call this more frequently if you prefer)
         self._train_step()
-
-        # Periodically copy Q-network -> target network. Frequency based on num steps done
-        if self.steps_done % self.target_update_freq == 0:
-            self.target_net.load_state_dict(self.q_net.state_dict())
 
         self.episode_count += 1
 
