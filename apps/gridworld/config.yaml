@@ -1,0 +1,27 @@
+rewards:
+  TILE: -0.05
+  TARGET: 200.0
+  PITFALL: -50
+  WALL: -1.0
+
+env:
+  wind_p: 0.0
+  step_limit: 500
+
+logging:
+  record_every: 100
+
+replay_buffer:
+  capacity: 50000
+
+agent:
+  gamma: 0.95
+  alpha: 0.005
+  epsilon: 1.0
+  xi: 0.995
+
+agent_nn:
+  hidden_dim: 128
+  batch_size: 64
+  target_update_freq: 200
+  train_every_n: 4
