@@ -53,6 +53,10 @@ class UVFAGridWorldSolver(Solver):
 
             # --- Environment Reset ---
             obs, info = self.environment.reset(options=self.__environment_options)
+            # The goal needs to be processed by the same wrapper logic as the observation
+            # Access the 'observation' method from the NormalizedCoordWrapper specifically
+            observation_fn = self.environment.get_wrapper_attr("observation")
+            goal = observation_fn({"agent": info.get("goal")})
             done: bool = False
             episode_success: int = 0
             
@@ -66,7 +70,7 @@ class UVFAGridWorldSolver(Solver):
                     a=int(action), 
                     s_prime=next_obs, 
                     r=float(reward),
-                    g=info.get("goal"),
+                    g=goal,
                     done=bool(terminated)
                 )
                 obs = next_obs # Update state

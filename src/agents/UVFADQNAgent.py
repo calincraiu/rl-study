@@ -117,14 +117,13 @@ class UVFADQNAgent(Agent):
         self.grad_norm_clipped: float = 0.0
 
     def _get_q_values(self, s: Any, g: Any) -> torch.Tensor:
-        """
-        Updated to require a goal.
-        """
         state_tensor = self._state_to_tensor(s)
-        goal_tensor = self._state_to_tensor(g) # Assuming goal is same shape/type as state
+        # Ensure g is treated as a state-like input
+        goal_tensor = self._state_to_tensor(g) 
         
         if state_tensor.ndim == 1:
             state_tensor = state_tensor.unsqueeze(0)
+        if goal_tensor.ndim == 1:
             goal_tensor = goal_tensor.unsqueeze(0)
             
         return self.q_net(state_tensor, goal_tensor)
