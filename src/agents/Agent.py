@@ -38,7 +38,7 @@ class Agent(ABC):
         pass
 
     @abstractmethod
-    def actuate(self, s: Any) -> Any:
+    def actuate(self, s: Any, **kwargs) -> Any:
         """
         Actuate base method. Used for choosing actions based on a state / observation.
 

@@ -1,17 +1,16 @@
-from abc import ABC
-from typing import Any, Optional
 from dataclasses import dataclass
 import random
+from typing import Any, Optional
 
-import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import numpy as np
 import gymnasium as gym
 
 from src.agents.Agent import Agent
-from src.utility.ReplayBuffers import ReplayBuffer, DequeReplayBuffer
-from src.nn.QNetwork import QNetwork
+from src.nn.UVFANetwork import UVFANetwork
+from src.utility.ReplayBuffers import DequeReplayBuffer
 
 
 @dataclass
@@ -20,48 +19,33 @@ class Transition:
     a: int
     r: float
     s_prime: int
+    g: int
     done: bool
 
 
-class BasicDQNAgent(Agent):
+class UVFADQNAgent(Agent):
     """
-    Deep Q-Network with experience replay + target network.
-    Works for both Discrete and Box observation spaces.
+    DQN agent with Universal Value Function Approximators.
     """
-
-    target_update_freq: int
-    """
-    Steps between target network updates. Recommended smaller for simpler problems / smaller environments and larger for more complex ones.
-    """
-
-    train_every_n: int
-    """
-    Number of percept calls between each Q network training. Recommended smaller for simpler problems / smaller environments and larger for more complex ones.
-    """
-
-    batch_size: int
-    """
-    Number of experiences to use in a batch for training the Q network during experience replay.
-    """
-
     def __init__(
         self,
         observation_space: gym.spaces.Space,
         action_space: gym.spaces.Space,
         replay_buffer_size: int,
+        goal_dim: int,
         hidden_dim: int = 128,
-        alpha: float = 1e-3, # learning rate
+        alpha: float = 1e-3,
         gamma: float = 0.99,
         epsilon: float = 1.0,
-        epsilon_floor: float = 0.1, # The minimum value of epsilon during training
-        xi: float = 0.995, # epsilon decay
+        epsilon_floor: float = 0.1,
+        xi: float = 0.995,
         batch_size: int = 64,
         target_update_freq: int = 100,
         train_every_n: int = 4,
         name: Optional[str] = None,
         ):
         super().__init__(name=name if name else type(self).__name__)
-
+        
         # --- Device ---
         device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
 
@@ -102,10 +86,12 @@ class BasicDQNAgent(Agent):
         self.action_dim: int = int(action_space.n)
 
         # --- Networks ---
-        self.q_net = QNetwork(self.state_dim, self.action_dim, hidden_dim).to(device)
-        self.target_net = QNetwork(self.state_dim, self.action_dim, hidden_dim).to(device)
-        self.target_net.load_state_dict(self.q_net.state_dict()) # Load the q_net into the target_net (using 2 nets for stability)
-        self.target_net.eval() # Freeze target net
+
+        # Overwrite standard Q-networks with UVFA networks
+        self.q_net = UVFANetwork(self.state_dim, goal_dim, self.action_dim, hidden_dim).to(device)
+        self.target_net = UVFANetwork(self.state_dim, goal_dim, self.action_dim, hidden_dim).to(device)
+        self.target_net.load_state_dict(self.q_net.state_dict())
+        self.target_net.eval()
         self.optimizer = optim.Adam(self.q_net.parameters(), lr=alpha)
 
         # --- Hyperparameters ---
@@ -114,6 +100,7 @@ class BasicDQNAgent(Agent):
         self.epsilon_floor = epsilon_floor
         self.xi = xi
         self.batch_size = batch_size
+        self.goal_dim = goal_dim
         self.target_update_freq = target_update_freq
         self.train_every_n = train_every_n
 
@@ -129,33 +116,37 @@ class BasicDQNAgent(Agent):
         self.grad_norm_unclipped: float = 0.0
         self.grad_norm_clipped: float = 0.0
 
-    def _get_q_values(self, s: Any) -> torch.Tensor:
+    def _get_q_values(self, s: Any, g: Any) -> torch.Tensor:
         """
-        Return Q(s, ·) as a tensor (shape: [1, action_dim]).
+        Updated to require a goal.
         """
         state_tensor = self._state_to_tensor(s)
+        goal_tensor = self._state_to_tensor(g) # Assuming goal is same shape/type as state
+        
         if state_tensor.ndim == 1:
-            state_tensor = state_tensor.unsqueeze(0)  # add batch dim for a single state
-        return self.q_net(state_tensor)
+            state_tensor = state_tensor.unsqueeze(0)
+            goal_tensor = goal_tensor.unsqueeze(0)
+            
+        return self.q_net(state_tensor, goal_tensor)
 
-    def actuate(self, s: Any) -> int:
+    def actuate(self, s: Any, g: Any) -> int:
         """
-        ε-greedy using the current Q-network.
+        Updated to pass the goal to the epsilon-greedy policy.
         """
-        if random.random() < self.epsilon:
-            return random.randrange(self.action_dim)  # explore
+        if random.random() < self.epsilon: # explore
+            return random.randrange(self.action_dim)
 
         with torch.no_grad(): # exploit
-            q_values = self._get_q_values(s)
+            q_values = self._get_q_values(s, g)
         return int(q_values.argmax().item())
-
-    def percept(self, s: Any, a: int, s_prime: Any, r: float, done: bool = False) -> None:
+    
+    def percept(self, s: Any, a: int, s_prime: Any, r: float, g: Any, done: bool = False) -> None:
         """
         Store transition in replay buffer.
         """
 
         # --- Push to buffer ---
-        transition = Transition(s, a, r, s_prime, done)
+        transition = Transition(s, a, r, s_prime, g, done)
         self.buffer.push(transition)
         
         # --- Training ---
@@ -171,30 +162,42 @@ class BasicDQNAgent(Agent):
         # --- Housekeeping ---
         self.steps_done += 1
 
-    def _train_step(self) -> None:
+    def update_episode(self, **kwargs: Any) -> None:
+        """
+        Called at the end of each episode.
+        """
+        # Decay exploration
+        self.epsilon = max(self.epsilon_floor, self.epsilon * self.xi)
 
+        # Train on a batch (you can call this more frequently if you prefer)
+        self._train_step()
+
+        self.episode_count += 1
+
+    def _train_step(self) -> None:
         # --- Ensure training condition ---
         if len(self.buffer) < self.batch_size:
-            return # Don't train until we have enough data
+            return
 
         # --- Sample batch ---
-        s, a, r, s_prime, done = self.buffer.sample(self.batch_size)
+        s, a, r, s_prime, g, done = self.buffer.sample(self.batch_size)
 
         # --- Convert to tensors (vectorized) ---
         device = next(self.q_net.parameters()).device
 
         s = self._state_to_tensor(s)
+        g = self._state_to_tensor(g) # Assuming goal is same shape/type as state
         s_prime = self._state_to_tensor(s_prime)
         a = torch.tensor(a, dtype=torch.long, device=device).unsqueeze(1)
         r = torch.tensor(r, dtype=torch.float32, device=device).unsqueeze(1)
         done = torch.tensor(done, dtype=torch.float32, device=device).unsqueeze(1)
 
         # --- Current Q-values ---
-        q_values: torch.Tensor = self.q_net(s).gather(1, a).squeeze(1)
+        q_values: torch.Tensor = self.q_net(s, g).gather(1, a).squeeze(1)
 
         # --- Target Q-values ---
         with torch.no_grad():
-            next_q = self.target_net(s_prime).max(1)[0]
+            next_q = self.target_net(s_prime, g).max(1)[0]
             target = r.squeeze(1) + self.gamma * next_q * (1 - done.squeeze(1))
 
         # --- Loss (Huber is more stable than MSE) ---
@@ -215,18 +218,6 @@ class BasicDQNAgent(Agent):
         self.latest_mean_q = q_values.mean().item()
         self.latest_q_std = q_values.std().item()
         self.latest_td_error = (q_values - target).abs().mean().item()
-
-    def update_episode(self, **kwargs: Any) -> None:
-        """
-        Called at the end of each episode.
-        """
-        # Decay exploration
-        self.epsilon = max(self.epsilon_floor, self.epsilon * self.xi)
-
-        # Train on a batch (you can call this more frequently if you prefer)
-        self._train_step()
-
-        self.episode_count += 1
 
     def get_policy(self) -> nn.Module:
         """

@@ -1,10 +1,14 @@
 from abc import ABC, abstractmethod
 import random
 from collections import deque
-from typing import Tuple, Any
+from dataclasses import is_dataclass, astuple
+from typing import Any, Tuple, List, Generic, TypeVar
 
 import torch
 import numpy as np
+
+
+T = TypeVar("T")
 
 
 class ReplayBuffer(ABC):
@@ -42,20 +46,37 @@ class ReplayBuffer(ABC):
         pass
 
 
-class DequeReplayBuffer(ReplayBuffer):
+class DequeReplayBuffer(ReplayBuffer, Generic[T]):
     """
     Simple circular buffer for experience replay.
     """
     def __init__(self, capacity: int = 100_000):
-        self.buffer = deque(maxlen=capacity)
+        self.buffer: deque[T] = deque(maxlen=capacity)
 
-    def push(self, s: np.ndarray, a: int, r: float, s_prime: np.ndarray, done: bool):
-        self.buffer.append((s, a, r, s_prime, done))
+    def push(self, item: T):
+        """Push a single transition (recommended: tuple or dataclass)."""
+        self.buffer.append(item)
 
     def sample(self, batch_size: int) -> Tuple:
         batch = random.sample(self.buffer, batch_size)
-        s, a, r, s_prime, done = zip(*batch)
-        return (np.array(s), np.array(a), np.array(r), np.array(s_prime), np.array(done))
+
+        # Auto-unpack if items are tuples or dataclasses
+        if batch:
+            if isinstance(batch[0], tuple):
+                transposed = zip(*batch)
+                return tuple(np.asarray(field) for field in transposed)
+            else:
+                # Try to handle as dataclass
+                try:
+                    batch_as_tuples = [astuple(item) for item in batch] # type: ignore
+                    transposed = zip(*batch_as_tuples)
+                    return tuple(np.asarray(field) for field in transposed)
+                except (TypeError, AttributeError):
+                    # Not a dataclass, return as-is
+                    pass
+        
+        # Fallback: return as list/array
+        return (np.asarray(batch),)
 
     def __len__(self):
         return len(self.buffer)

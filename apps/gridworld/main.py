@@ -1,4 +1,5 @@
 import time
+import uuid
 import argparse
 import yaml
 from pathlib import Path
@@ -73,11 +74,14 @@ def load_config(path: str = f"{Path(__file__).resolve().parent.as_posix()}/confi
 def run_basic(
         config: dict, 
         grid: np.ndarray, 
-        video_output_dir: Path = REPO_ROOT / "runtime" / "videos"
+        output_dir: Path = REPO_ROOT / "runtime"
         ):
     
+    # --- Setup ---
+    run_id = str(uuid.uuid4())
+    
     # --- Config Parsing ---
-    video_output_dir = video_output_dir / f"basic_trial_{time.strftime('%X_%x').replace(':', '').replace('/', '')}"
+    output_dir = output_dir / f"basic_trial_{run_id}"
 
     tile_reward = config["rewards"]["TILE"]
     target_reward = config["rewards"]["TARGET"]
@@ -114,10 +118,14 @@ def run_basic(
     wrapped_env = NormalizedCoordWrapper(env)
     wrapped_env = RecordVideo(
         wrapped_env,
-        video_folder=video_output_dir.as_posix(),
+        video_folder=output_dir.as_posix(),
         episode_trigger=lambda episode_id: episode_id % logging_record_every == 0,
         disable_logger=True # Keeps the console clean
     )
+    # --- Env --- 
+
+    # TO DO!
+    # CREATE A NEW WRAPPER THAT PLOTS THE VALUE SPACE AND POLICY AS A HEAT MAP? OR SEPARATE UTILITY FUNCTION?
 
     #  --- Agent ---
     replay_buffer = DequeReplayBuffer(capacity=replay_buffer_capacity)
@@ -144,7 +152,7 @@ def run_basic(
 def run_curriculum_PER(
     config: dict, 
     grid: np.ndarray, 
-    video_output_dir: Path = REPO_ROOT / "runtime" / "videos"
+    video_output_dir: Path = REPO_ROOT / "runtime"
     ):
     raise NotImplementedError
 

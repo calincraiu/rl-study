@@ -1,11 +1,17 @@
 from enum import Enum
-from typing import Optional, Any, Union
+from pathlib import Path
+from typing import Optional, Any, Union, Callable, cast
 from collections import deque
+from builtins import getattr as builtin_getattr
+import copy
 
 import math
+import warnings
 import numpy as np
 import gymnasium as gym
 import pygame
+
+PlotCallback = Callable[..., Any]
 
 
 class Actions(Enum):
@@ -75,13 +81,12 @@ class GridWorldEnv(gym.Env):
         self.rewards: dict = reward if reward is not None else self.__m_default_reward
         self.num_rows, self.num_cols = self.grid.shape
         
-        self.__target_position: np.ndarray = np.argwhere(self.grid == Cells.TARGET.value)[0] # Compute target position for distance map
-        self.distance_map = self.__compute_distance_map() # Distance map (BFS) for agent position scheduling
-        self.max_distance_from_target = self.max_distance_from_target = np.max(self.distance_map[np.isfinite(self.distance_map)]) # Maximum distance from the goal from anywhere on the grid (taking into account obstacles)
+        self.__target_position: np.ndarray = np.argwhere(self.grid == Cells.TARGET.value)[0]
+        self.distance_map = self.__compute_distance_map()
+        
+        # FIX: Removed typo double-assignment
+        self.max_distance_from_target = np.max(self.distance_map[np.isfinite(self.distance_map)]) 
 
-        # Observation space - can be multipart - here it includes only the agent position
-        # But it can include any observations that we deep relevant. Examples: a field of vision,
-        # the location of the target (could be considered cheating), distance to nearest wall, etc.
         self.observation_space = gym.spaces.Dict(
             {
                 "agent" : gym.spaces.Box(
@@ -93,105 +98,74 @@ class GridWorldEnv(gym.Env):
             }
         )
 
-        # Action space
         self.action_space = gym.spaces.Discrete(len(self.__action_to_direction))
-
-        # Agent
         self.__agent_position: Optional[np.ndarray] = None
-
-        # Truncation condition
         self.__step_limit = step_limit
         self.__current_step = 0
 
-        # Environment rendering
         assert render_mode is None or render_mode in self.metadata["render_modes"]
         self.render_mode = render_mode
-        
-        # If human-rendering is used, `self.window` will be a reference
-        # to the window that we draw to. `self.clock` will be a clock that is used
-        # to ensure that the environment is rendered at the correct framerate in
-        # human-mode. They will remain `None` until human-mode is used for the
-        # first time.
         self.__window = None
         self.__clock = None
 
     def __pad_grid(self, grid: np.ndarray, pad_type: Cells) -> np.ndarray:
-        """Pads the grid with a specified cell type."""
         return np.pad(grid, constant_values=pad_type.value, pad_width=1)
 
     def __get_obs(self) -> dict:
-        """
-        Convert internal state to observation format. This corresponds to the observation_space structure.
-        """
         return {
             "agent" : self.__agent_position,
         }
+
+    def build_observation(self, agent_position: np.ndarray) -> dict:
+        return {
+            "agent": np.asarray(agent_position, dtype=np.int64)
+        }
+
+    @property
+    def goal_position(self) -> np.ndarray:
+        return self.__target_position.copy()
     
     def __get_info(self) -> dict:
-        """
-        Compute auxiliary information.
-
-        Returns:
-            dict: Info with Manhattan distance between agent and target (for debugging).
-        """
         return {
             "distance": np.linalg.norm(
                 self.__agent_position - self.__target_position, ord=1
-            )
+            ),
+            "goal": self.__target_position
         }
     
     def __set_agent_position(self, position: Optional[np.ndarray] = None) -> None:
-        """
-        Set the agent position on the grid.
-
-        Args:
-            position (np.ndarray | None): This can be a specific position given as [x, y] coordinates or None.
-                If None, a random valid position on the grid will be assigned. 
-        """
         if position is not None: 
-            self.__agent_position = position # Specific position
+            self.__agent_position = position 
         else:
-            valid_positions = np.argwhere(self.grid == Cells.TILE.value) # All regular grid positions / tiles
-            idx = np.random.randint(len(valid_positions)) # Random choice
+            valid_positions = np.argwhere(self.grid == Cells.TILE.value) 
+            idx = np.random.randint(len(valid_positions)) 
             self.__agent_position = valid_positions[idx]
 
     def __set_agent_position_by_curriculum(self, curriculum_distance: int, curriculum_threshold):
-        """
-        Set an agent position within a specific distance to the target.
-
-        Args:
-            curriculum_distance (int): Set the position of the agent randomly within curriculum_distance of the target.
-            curriculum_threshold (float): The threshold for deciding whether to use curriculum learning or random placement.
-                Higher threshold means more curriculum. Full curriculum learning may lead to overfitting.
-        """
         if curriculum_threshold < 0.0: curriculum_threshold = 0.0
         if curriculum_threshold > 1.0: curriculum_threshold = 1.0
         if curriculum_distance < 0: curriculum_distance = 0
         if curriculum_distance > self.max_distance_from_target: curriculum_distance = self.max_distance_from_target
 
-        if self.np_random.random() < curriculum_threshold: # curriculum
+        if self.np_random.random() < curriculum_threshold:
             positions = self.__get_positions_within_distance(curriculum_distance)
-        else: # random / max
+        else:
             positions = self.__get_positions_within_distance(self.max_distance_from_target)
 
         idx = self.np_random.integers(len(positions))
         self.__agent_position = positions[idx]
 
     def reset(self, seed: Optional[int] = None, options: Optional[dict] = None) -> tuple[dict, dict]:
-        """
-        Start a new episode.
+        super().reset(seed=seed) 
 
-        Args:
-            seed (Optional[int]): Random seed for reproducible episodes
-            options Optional[dict]: Additional configuration
+        # --- Goal placement ---
+        # Note: Moved before agent placement so curriculum logic relies on the newly updated distance map
+        if options:
+            goal_placement_strategy: Optional[str] = options.get("goal_placement_strategy", None)
+            if goal_placement_strategy is not None:
+                self.__set_goal_position(goal_placement_strategy)
 
-        Returns:
-            tuple: (observation, info) for the initial state
-        """
-        # --- Seed reset
-        super().reset(seed=seed) # Must call this first to seed the random number generator
-
-        # --- Agent placement
+        # --- Agent placement ---
         if options:
             agent_start_position_strategy: str = options.get("agent_start_position_strategy", "random")
             position_strategy_params: dict = options.get("position_strategy_params", {})
@@ -204,104 +178,63 @@ class GridWorldEnv(gym.Env):
                 agent_fixed_position = position_strategy_params.get("agent_fixed_position", np.array([0, 0]))
                 self.__set_agent_position(agent_fixed_position)
             else:
-                self.__set_agent_position() # random
+                self.__set_agent_position()
         else:
-            self.__set_agent_position() # no options -> random
+            self.__set_agent_position()
 
-        # --- Truncation condition
         self.__current_step = 0
 
-        # --- Rendering
         if self.render_mode == "human":
             self.render()
 
-        # --- Return
         return self.__get_obs(), self.__get_info()
     
     def step(self, action: Union[int, Actions]) -> tuple[dict, float, bool, bool, dict]:
-        """Execute one timestep within the environment.
-
-        Args:
-            action (int): The action to take (0-3 for directions)
-
-        Returns:
-            tuple: (observation, reward, terminated, truncated, info)
-        """
-        # --- Act in the environment
         if isinstance(action, Actions):
-            action = action.value # get int from Actions
+            action = action.value 
 
-        # --- Stochastic Mechanic (Wind) ---
-        # Roll for wind: 0 = No wind, 1 = Left wind, 2 = Right wind
         if self.np_random.random() < self.wind_p:
-            # 50/50 chance to blow left or right relative to intended direction
             if self.np_random.random() < 0.5:
-                actual_action = (action + 1) % 4  # Relative Left
+                actual_action = (action + 1) % 4  
             else:
-                actual_action = (action - 1) % 4  # Relative Right
+                actual_action = (action - 1) % 4  
         else:
             actual_action = action
 
-        # Map the discrete action (0-3) to a movement direction
         direction = self.__action_to_direction[actual_action]
 
-        # Update agent position, ensuring it stays within grid bounds
-        # np.clip prevents the agent from walking off the edge
         new_agent_position = np.clip(
             self.__agent_position + direction, [0, 0], [self.num_rows - 1, self.num_cols - 1]
         )
-        # Verify cell type at the new position
+        
         cell_type = self.grid[new_agent_position[0], new_agent_position[1]]
 
-        # Verify if it hit an obstruction
         if cell_type == Cells.WALL.value:
-            new_agent_position = self.__agent_position # Go back to the previous cell
+            new_agent_position = self.__agent_position 
         
-        # Check if the agent reached a termination state
         terminated = cell_type == Cells.TARGET.value or cell_type == Cells.PITFALL.value
-
-        # Update agent 
         self.__set_agent_position(new_agent_position)
 
-        # --- Truncation (optional)
         truncated = self.__current_step >= self.__step_limit
         self.__current_step += 1
 
-        # --- Assign reward
         reward = self.rewards[cell_type]
 
-        # --- Rendering
         if self.render_mode == "human":
             self.render()
 
-        # --- Return
-        observation = self.__get_obs()
-        info = self.__get_info()
-
-        return observation, reward, terminated, truncated, info
+        return self.__get_obs(), reward, terminated, truncated, self.__get_info()
     
     def get_max_abs_reward(self) -> float:
-        """
-        Get the maximum absolut reward value from the environment's reward function.
-        This is useful for doing reward scaling so function-approximation agents don't have exploding gradients.
-        """
         return np.max(np.abs(list(self.rewards.values())))
     
     def __compute_distance_map(self) -> np.ndarray:
-        """
-        Compute shortest-path distance from every reachable tile to the goal.
-        Walls are treated as impassable.
-        
-        Returns:
-            np.ndarray of shape (rows, cols) with distances (inf if unreachable)
-        """
         distances = np.full((self.num_rows, self.num_cols), np.inf)
         visited = np.zeros_like(distances, dtype=bool)
 
         queue = deque()
         goal = tuple(self.__target_position)
 
-        # Start from goal
         queue.append((goal, 0))
         distances[goal] = 0
         visited[goal] = True
@@ -312,11 +245,8 @@ class GridWorldEnv(gym.Env):
             for direction in self.__action_to_direction.values():
                 nr, nc = r + direction[0], c + direction[1]
 
-                # Bounds check
                 if not (0 <= nr < self.num_rows and 0 <= nc < self.num_cols):
                     continue
-
-                # Skip walls
                 if self.grid[nr, nc] == Cells.WALL.value:
                     continue
 
@@ -328,23 +258,31 @@ class GridWorldEnv(gym.Env):
         return distances
     
     def __get_positions_within_distance(self, max_distance: int) -> np.ndarray:
-        """
-        Get all valid positions within a given shortest-path distance from the goal.
-
-        Args:
-            max_distance (int): Maximum distance from goal
-
-        Returns:
-            np.ndarray of positions [[r, c], ...]
-        """
         mask = (
-            (self.distance_map <= max_distance) & # is within distance
-            np.isfinite(self.distance_map) & # is finite distance (reachable)
-            (self.grid != Cells.WALL.value) & # is not a wall
-            (self.grid != Cells.PITFALL.value) & # is not a pitfall
-            (self.grid != Cells.TARGET.value) # is not the target itself
+            (self.distance_map <= max_distance) &
+            np.isfinite(self.distance_map) &
+            (self.grid != Cells.WALL.value) &
+            (self.grid != Cells.PITFALL.value) &
+            (self.grid != Cells.TARGET.value)
         )
         return np.argwhere(mask)
+    
+    def __set_goal_position(self, strategy: str) -> None:
+        self.grid[tuple(self.__target_position)] = Cells.TILE.value
+
+        if strategy == "random":
+            options = np.argwhere(self.grid == Cells.TILE.value)
+            if options.size == 0:
+                raise RuntimeError("No valid goal positions available for random goal placement")
+            goal_idx = self.np_random.integers(len(options))
+            goal_loc = options[goal_idx]
+            self.grid[tuple(goal_loc)] = Cells.TARGET.value
+            
+        self.__target_position = np.argwhere(self.grid == Cells.TARGET.value)[0]
+
+        # FIX: Recompute distance map and max target distance dynamically 
+        self.distance_map = self.__compute_distance_map()
+        self.max_distance_from_target = np.max(self.distance_map[np.isfinite(self.distance_map)])
     
     def render(self):
         if self.render_mode == "rgb_array":
@@ -379,7 +317,6 @@ class GridWorldEnv(gym.Env):
 
         pix_square_size = window_size / max(self.num_rows, self.num_cols)
 
-        # --- Draw grid cells
         for row in range(self.num_rows):
             for col in range(self.num_cols):
                 cell = self.grid[row, col]
@@ -395,7 +332,6 @@ class GridWorldEnv(gym.Env):
                     ),
                 )
 
-        # --- Draw agent
         pygame.draw.circle(
             canvas,
             (0, 0, 255),
@@ -406,7 +342,6 @@ class GridWorldEnv(gym.Env):
             pix_square_size / 3,
         )
 
-        # --- Grid lines
         for x in range(self.num_cols + 1):
             pygame.draw.line(
                 canvas,
@@ -447,11 +382,9 @@ class GridWorldEnv(gym.Env):
 class DiscreteGridWorldWrapper(gym.ObservationWrapper):
     def __init__(self, env: GridWorldEnv):
         super().__init__(env)
-        # Update the space so the Agent knows the new total state count
         self.observation_space = gym.spaces.Discrete(env.num_rows * env.num_cols)
 
     def observation(self, obs):
-        # Convert {"agent": [r, c]} -> single integer index
         row, col = obs["agent"]
         return int(row * self.get_wrapper_attr("num_cols") + col)
     
@@ -459,57 +392,131 @@ class DiscreteGridWorldWrapper(gym.ObservationWrapper):
 class NormalizedCoordWrapper(gym.ObservationWrapper):
     def __init__(self, env: gym.Env):
         super().__init__(env)
-        # Define the new space: 2 coordinates (row, col) normalized between 0 and 1
         self.observation_space = gym.spaces.Box(
             low=0.0, high=1.0, shape=(2,), dtype=np.float32
         )
-        # Access unwrapped env for grid dimensions
         self.rows = self.get_wrapper_attr("num_rows")
         self.cols = self.get_wrapper_attr("num_cols")
 
     def observation(self, obs):
-        # Extract [row, col] from the "agent" dict
         r, c = obs["agent"]
-        # Normalize to [0, 1] range for better MLP performance
-        return np.array([r / (self.rows - 1), c / (self.cols - 1)], dtype=np.float32)
+        return np.array([r / max(1, self.rows - 1), c / max(1, self.cols - 1)], dtype=np.float32)
     
     
 class PatienceWrapper(gym.Wrapper):
-    """
-    Truncates the episode if the agent remains in the exact same position 
-    for a specified number of consecutive steps.
-    """
     def __init__(self, env: gym.Env, patience: int = 5):
         super().__init__(env)
         self.patience = patience
         self.stuck_counter = 0
-        self.last_position: Any = None
+        self.last_obs: Any = None
+
+    # FIX: Ensure it correctly compares observation states independent of nested dictionary layouts.
+    def _extract_obs_state(self, obs: Any) -> Any:
+        if isinstance(obs, dict) and "agent" in obs:
+            return obs["agent"].copy()
+        elif isinstance(obs, np.ndarray):
+            return obs.copy()
+        else:
+            return copy.deepcopy(obs)
 
     def reset(self, **kwargs):
-        # Reset the environment and clear our tracking variables
         obs, info = self.env.reset(**kwargs)
         self.stuck_counter = 0
-        
-        # Store the initial position. 
-        # We assume this is applied to the base GridWorldEnv where obs is a Dict
-        self.last_position = obs["agent"].copy() 
+        self.last_obs = self._extract_obs_state(obs) 
         return obs, info
 
     def step(self, action):
         obs, reward, terminated, truncated, info = self.env.step(action)
+        current_obs = self._extract_obs_state(obs)
         
-        current_position = obs["agent"]
-        
-        # Check if the agent actually moved
-        if np.array_equal(current_position, self.last_position):
+        if np.array_equal(current_obs, self.last_obs):
             self.stuck_counter += 1
         else:
             self.stuck_counter = 0
-            self.last_position = current_position.copy()
+            self.last_obs = current_obs
             
-        # If the agent has been stuck for too long, truncate the episode
         if self.stuck_counter >= self.patience:
             truncated = True
-            info["patience_exceeded"] = True # Optional: Good for debugging/logging
+            info["patience_exceeded"] = True 
             
         return obs, reward, terminated, truncated, info
+
+
+class PlotSavingWrapper(gym.Wrapper):
+    def __init__(
+        self,
+        env: gym.Env,
+        save_path: str | Path,
+        agent: Optional[Any] = None,
+        plot_callback: Optional[PlotCallback] = None,
+        save_every_n_episodes: Optional[int] = None,
+        save_every_n_steps: Optional[int] = None,
+        show: bool = False,
+        dpi: int = 150,
+    ):
+        super().__init__(env)
+        self.agent = agent
+        self.save_path = Path(save_path)
+        self.save_path.mkdir(parents=True, exist_ok=True)
+        self.plot_callback = plot_callback
+        self.save_every_n_episodes = save_every_n_episodes
+        self.save_every_n_steps = save_every_n_steps
+        self.show = show
+        self.dpi = dpi
+        self.episode_id = -1
+        self.step_id = 0
+
+    def reset(self, *args, **kwargs):
+        obs, info = self.env.reset(*args, **kwargs)
+        self.episode_id += 1
+        self.step_id = 0
+        self._maybe_save_plot()
+        return obs, info
+
+    def step(self, action):
+        obs, reward, terminated, truncated, info = self.env.step(action)
+        self.step_id += 1
+        self._maybe_save_plot()
+        return obs, reward, terminated, truncated, info
+
+    def _maybe_save_plot(self):
+        if self.plot_callback is None or self.agent is None:
+            return
+
+        # FIX: Check `self.step_id == 0` so episode triggers don't duplicate loop across the whole episode.
+        if self.save_every_n_episodes is not None and self.episode_id >= 0 and self.step_id == 0:
+            if self.episode_id % self.save_every_n_episodes == 0:
+                self._save_plot(self.episode_id)
+                return
+
+        if self.save_every_n_steps is not None and self.step_id > 0:
+            if self.step_id % self.save_every_n_steps == 0:
+                self._save_plot(self.episode_id, self.step_id)
+
+    def _save_plot(self, episode_id: int, step_id: Optional[int] = None):
+        if self.plot_callback is None:
+            return
+
+        file_name = f"gridworld_plot_ep{episode_id:05d}"
+        if step_id is not None:
+            file_name += f"_step{step_id:05d}"
+        file_name += ".png"
+        file_path = self.save_path / file_name
+
+        try:
+            fig = self.plot_callback(
+                self.agent,
+                self,
+                goal=getattr(self.unwrapped, "goal_position", None),  # type: ignore[attr-defined]
+                show=self.show,
+                save_path=file_path,
+                dpi=self.dpi,
+            )
+            if fig is not None and not self.show:
+                import matplotlib.pyplot as plt
+                plt.close(fig)
+        except Exception as exc:
+            warnings.warn(f"Failed to save plot at episode={episode_id}, step={step_id}: {exc}", stacklevel=2)
+
+    def set_agent(self, agent: Any) -> None:
+        self.agent = agent
