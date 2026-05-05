@@ -21,6 +21,7 @@ _ACTION_VECTORS = {
 
 def _apply_observation_wrappers(env: gym.Env, observation: Any) -> Any:
     if isinstance(env, gym.ObservationWrapper):
+        observation = _apply_observation_wrappers(env.env, observation)
         return env.observation(observation)
     if isinstance(env, gym.Wrapper):
         return _apply_observation_wrappers(env.env, observation)
@@ -28,42 +29,60 @@ def _apply_observation_wrappers(env: gym.Env, observation: Any) -> Any:
 
 
 def _observation_to_tensor(observation: Any, env: gym.Env, device: torch.device) -> torch.Tensor:
-    if isinstance(env.observation_space, gym.spaces.Discrete):
-        obs_tensor = torch.nn.functional.one_hot(
-            torch.tensor(observation, dtype=torch.long, device=device),
-            num_classes=int(env.observation_space.n)
-        ).float().unsqueeze(0)
-        return obs_tensor
+    if isinstance(observation, dict):
+        if "agent" in observation:
+            observation = observation["agent"]
+        elif len(observation) == 1:
+            observation = next(iter(observation.values()))
+        else:
+            raise ValueError(f"Unsupported dict observation keys: {list(observation.keys())}")
 
-    obs_array = np.asarray(observation, dtype=np.float32)
-    return torch.tensor(obs_array, dtype=torch.float32, device=device).flatten().unsqueeze(0)
+    if isinstance(env.observation_space, gym.spaces.Discrete):
+        idx = int(np.asarray(observation).item())
+        return torch.nn.functional.one_hot(
+            torch.tensor(idx, dtype=torch.long, device=device),
+            num_classes=int(env.observation_space.n),
+        ).float().unsqueeze(0)
+
+    if isinstance(env.observation_space, gym.spaces.Box):
+        obs_array = np.asarray(observation, dtype=np.float32).reshape(-1)
+        return torch.tensor(obs_array, dtype=torch.float32, device=device).unsqueeze(0)
+
+    if isinstance(env.observation_space, gym.spaces.Dict):
+        if not isinstance(observation, dict) or "agent" not in observation:
+            raise ValueError("Dict observation space expects an {'agent': ...} observation.")
+        obs_array = np.asarray(observation["agent"], dtype=np.float32).reshape(-1)
+        return torch.tensor(obs_array, dtype=torch.float32, device=device).unsqueeze(0)
+
+    raise ValueError(f"Unsupported observation space: {type(env.observation_space)}")
 
 
 def _get_q_values(agent: Agent, observation: Any, goal: Any, env: gym.Env):
     agent_policy = agent.get_policy()
 
-    if isinstance(agent_policy, torch.nn.Module):
-        device = next(agent_policy.parameters()).device
-        state_tensor = _observation_to_tensor(observation, env, device)
-        goal_tensor = _observation_to_tensor(goal, env, device)
+    if not isinstance(agent_policy, torch.nn.Module):
+        raise ValueError("This plotting utility currently supports only torch-based agents.")
+
+    device = next(agent_policy.parameters()).device
+    state_tensor = _observation_to_tensor(observation, env, device)
+    goal_tensor = _observation_to_tensor(goal, env, device)
+
+    with torch.no_grad():
         return agent_policy(state_tensor, goal_tensor)
-    elif isinstance(agent_policy, np.ndarray):
-        return agent_policy[observation]
-    else:
-        raise ValueError("Unable to evaluate Q-values for this agent type.")
 
 
 def _greedy_action(agent: Agent, observation: Any, goal: Any, env: gym.Env) -> int:
-    if hasattr(agent, "actuate"):
-        epsilon_backup = None
-        if hasattr(agent, "epsilon"):
-            epsilon_backup = getattr(agent, "epsilon")
-            setattr(agent, "epsilon", 0.0)
-        try:
-            return int(agent.actuate(observation, g=goal))
-        finally:
-            if epsilon_backup is not None:
-                setattr(agent, "epsilon", epsilon_backup)
+    agent_policy = agent.get_policy()
+
+    if not isinstance(agent_policy, torch.nn.Module):
+        raise ValueError("This plotting utility currently supports only torch-based agents.")
+
+    device = next(agent_policy.parameters()).device
+    obs_tensor = _observation_to_tensor(observation, env, device)
+    goal_tensor = _observation_to_tensor(goal, env, device)
+
+    with torch.no_grad():
+        return int(agent_policy(obs_tensor, goal_tensor).argmax(dim=-1).item())
 
     policy = agent.get_policy()
     if isinstance(policy, torch.nn.Module):
@@ -115,8 +134,9 @@ def plot_value_and_policy(
 
             try:
                 q_values = _get_q_values(agent, observation, transformed_goal, env)
-                value_grid[row, col] = float(q_values.max().item())
-                policy_grid[row, col] = int(q_values.argmax().item())
+                q_np = q_values.squeeze(0).detach().cpu().numpy()
+                value_grid[row, col] = float(np.max(q_np))
+                policy_grid[row, col] = int(np.argmax(q_np))
             except ValueError:
                 value_grid[row, col] = np.nan
                 policy_grid[row, col] = _greedy_action(agent, observation, transformed_goal, env)
@@ -184,6 +204,7 @@ def plot_value_and_policy(
     if save_path is not None:
         save_path = Path(save_path)
         save_path.parent.mkdir(parents=True, exist_ok=True)
+        fig.tight_layout()
         fig.savefig(save_path, dpi=dpi, bbox_inches="tight")
 
     if show:

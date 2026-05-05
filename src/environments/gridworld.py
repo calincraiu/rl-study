@@ -83,15 +83,14 @@ class GridWorldEnv(gym.Env):
         
         self.__target_position: np.ndarray = np.argwhere(self.grid == Cells.TARGET.value)[0]
         self.distance_map = self.__compute_distance_map()
-        
-        # FIX: Removed typo double-assignment
+    
         self.max_distance_from_target = np.max(self.distance_map[np.isfinite(self.distance_map)]) 
 
         self.observation_space = gym.spaces.Dict(
             {
                 "agent" : gym.spaces.Box(
                     low=np.array([0, 0]),
-                    high=np.array([self.num_rows, self.num_cols]),
+                    high=np.array([self.num_rows - 1, self.num_cols - 1]),
                     shape=(2,),
                     dtype=np.int64
                 )
@@ -111,11 +110,6 @@ class GridWorldEnv(gym.Env):
     def __pad_grid(self, grid: np.ndarray, pad_type: Cells) -> np.ndarray:
         return np.pad(grid, constant_values=pad_type.value, pad_width=1)
 
-    def __get_obs(self) -> dict:
-        return {
-            "agent" : self.__agent_position,
-        }
-
     def build_observation(self, agent_position: np.ndarray) -> dict:
         return {
             "agent": np.asarray(agent_position, dtype=np.int64)
@@ -125,21 +119,26 @@ class GridWorldEnv(gym.Env):
     def goal_position(self) -> np.ndarray:
         return self.__target_position.copy()
     
+    def __get_obs(self) -> dict:
+        return {
+            "agent": self.__agent_position.copy() if self.__agent_position is not None else None,
+        }
+
     def __get_info(self) -> dict:
         return {
             "distance": np.linalg.norm(
                 self.__agent_position - self.__target_position, ord=1
             ),
-            "goal": self.__target_position
+            "goal": self.__target_position.copy(),
         }
-    
+
     def __set_agent_position(self, position: Optional[np.ndarray] = None) -> None:
-        if position is not None: 
-            self.__agent_position = position 
+        if position is not None:
+            self.__agent_position = np.asarray(position, dtype=np.int64).copy()
         else:
-            valid_positions = np.argwhere(self.grid == Cells.TILE.value) 
-            idx = np.random.randint(len(valid_positions)) 
-            self.__agent_position = valid_positions[idx]
+            valid_positions = np.argwhere(self.grid == Cells.TILE.value)
+            idx = self.np_random.integers(len(valid_positions))
+            self.__agent_position = valid_positions[idx].copy()
 
     def __set_agent_position_by_curriculum(self, curriculum_distance: int, curriculum_threshold):
         if curriculum_threshold < 0.0: curriculum_threshold = 0.0
@@ -214,11 +213,9 @@ class GridWorldEnv(gym.Env):
         
         terminated = cell_type == Cells.TARGET.value or cell_type == Cells.PITFALL.value
         self.__set_agent_position(new_agent_position)
-
-        truncated = self.__current_step >= self.__step_limit
-        self.__current_step += 1
-
         reward = self.rewards[cell_type]
+        self.__current_step += 1
+        truncated = self.__current_step >= self.__step_limit
 
         if self.render_mode == "human":
             self.render()
@@ -277,10 +274,11 @@ class GridWorldEnv(gym.Env):
             goal_idx = self.np_random.integers(len(options))
             goal_loc = options[goal_idx]
             self.grid[tuple(goal_loc)] = Cells.TARGET.value
-            
-        self.__target_position = np.argwhere(self.grid == Cells.TARGET.value)[0]
+        else:
+            raise ValueError(f"Unsupported goal placement strategy: {strategy}")
 
-        # FIX: Recompute distance map and max target distance dynamically 
+        self.__target_position = np.argwhere(self.grid == Cells.TARGET.value)[0].copy()
+
         self.distance_map = self.__compute_distance_map()
         self.max_distance_from_target = np.max(self.distance_map[np.isfinite(self.distance_map)])
     
@@ -293,16 +291,16 @@ class GridWorldEnv(gym.Env):
     def __render_frame(self):
         agent_pos = self.__agent_position
         assert agent_pos is not None
+
         window_size = self.metadata["pygame_window_size"]
         aspect_ratio = float(self.num_rows) / float(self.num_cols)
-        window_width: int = 0
-        window_height: int = 0
+
         if aspect_ratio > 1.0:
-            window_width = int(aspect_ratio * window_size)
             window_height = window_size
+            window_width = int(window_size / aspect_ratio)
         else:
-            window_height = int(aspect_ratio * window_size)
             window_width = window_size
+            window_height = int(window_size * aspect_ratio)
 
         if self.__window is None and self.render_mode == "human":
             pygame.init()
@@ -315,7 +313,7 @@ class GridWorldEnv(gym.Env):
         canvas = pygame.Surface((window_width, window_height))
         canvas.fill((255, 255, 255))
 
-        pix_square_size = window_size / max(self.num_rows, self.num_cols)
+        pix_square_size = min(window_width / self.num_cols, window_height / self.num_rows)
 
         for row in range(self.num_rows):
             for col in range(self.num_cols):
