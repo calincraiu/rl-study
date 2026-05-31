@@ -27,6 +27,10 @@ class UVFADQNAgent(Agent):
     """
     DQN agent with Universal Value Function Approximators.
     """
+
+    use_HER: bool
+    """Whether to use Hindsight Experience Replay."""
+
     def __init__(
         self,
         observation_space: gym.spaces.Space,
@@ -42,6 +46,7 @@ class UVFADQNAgent(Agent):
         batch_size: int = 64,
         target_update_freq: int = 100,
         train_every_n: int = 4,
+        use_HER: bool = True,
         name: Optional[str] = None,
         ):
         super().__init__(name=name if name else type(self).__name__)
@@ -103,6 +108,7 @@ class UVFADQNAgent(Agent):
         self.goal_dim = goal_dim
         self.target_update_freq = target_update_freq
         self.train_every_n = train_every_n
+        self.use_HER = use_HER
 
         # --- Replay buffer ---
         self.buffer = DequeReplayBuffer[Transition](replay_buffer_size)
