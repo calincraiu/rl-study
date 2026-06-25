@@ -201,13 +201,16 @@ class GridEnvBase(BaseEnv):
             self,
             Q_pi,
             action_set: Optional[Sequence[Action]] = None,
+            starting_state: Optional[State] = None,
             max_steps=500,
             interval=150,
     ):
         action_set = action_set if action_set is not None else self.action_set
 
         states = []
-        s = self.reset()
+        starting_state = starting_state if starting_state else self.reset()
+        self.current_position = starting_state
+        s = starting_state
         states.append(s)
 
         for _ in range(max_steps):
@@ -238,7 +241,7 @@ class GridEnvBase(BaseEnv):
                     ax.add_patch(rect)
         # ----------------------
 
-        start_row, start_col = self.start_position
+        start_row, start_col = starting_state
         goal_row, goal_col = self.goal_position
 
         ax.scatter(start_col, start_row, marker="s", s=250, label="Start")
