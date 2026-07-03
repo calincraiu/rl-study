@@ -1,3 +1,4 @@
+import torch
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
@@ -9,6 +10,25 @@ from typing import Optional, Sequence, Tuple, Union
 State = tuple[int, int]
 Action = tuple[int, int]
 ActionInput = Union[int, Action]
+
+
+def get_q_values(Q, s, get_features=None):
+    """
+    Returns Q(s, :) for either:
+    - tabular dict/array Q
+    - nn.Module Q
+    """
+
+    # --- CASE 1: neural network ---
+    if isinstance(Q, torch.nn.Module):
+        if get_features is None:
+            raise ValueError("get_features must be provided for nn.Module Q.")
+        phi = get_features(s)
+        with torch.no_grad():
+            return Q(phi).cpu().numpy()
+
+    # --- CASE 2: numpy / dict table ---
+    return Q[s]
 
 
 class BaseEnv:
@@ -139,7 +159,7 @@ class GridEnvBase(BaseEnv):
         plt.grid(True)
         plt.show()
 
-    def plot_policy(self, Q_pi, action_set: Optional[Sequence[Action]] = None):
+    def plot_policy(self, Q_pi, action_set=None, get_features=None):
         action_set = action_set if action_set is not None else self.action_set
 
         fig, ax = plt.subplots(figsize=(16, 8))
@@ -161,19 +181,18 @@ class GridEnvBase(BaseEnv):
         for row in range(self.num_rows):
             for col in range(self.num_cols):
                 s = (row, col)
-                
-                # --- NEW WALL LOGIC ---
+
                 if self._is_blocked(s):
-                    # Draw a dark gray rectangle. Offset by -0.5 to snap to grid lines.
                     rect = patches.Rectangle((col - 0.5, row - 0.5), 1, 1, facecolor='dimgray')
                     ax.add_patch(rect)
-                    continue # Skip drawing an arrow for walls
-                # ----------------------
+                    continue
 
                 if s == self.goal_position:
                     continue
 
-                best_action_idx = int(np.argmax(Q_pi[s]))
+                q_vals = get_q_values(Q_pi, s, get_features)
+                best_action_idx = int(np.argmax(q_vals))
+
                 d_row, d_col = action_set[best_action_idx]
 
                 X.append(col)
@@ -183,28 +202,22 @@ class GridEnvBase(BaseEnv):
 
         ax.quiver(X, Y, U, V, angles="xy", scale_units="xy", scale=3.0, pivot="middle")
 
-        start_row, start_col = self.start_position
-        goal_row, goal_col = self.goal_position
+        sr, sc = self.start_position
+        gr, gc = self.goal_position
 
-        ax.scatter(start_col, start_row, marker="s", s=250, label="Start")
-        ax.scatter(goal_col, goal_row, marker="*", s=350, label="Goal")
+        ax.scatter(sc, sr, marker="s", s=250, label="Start")
+        ax.scatter(gc, gr, marker="*", s=350, label="Goal")
 
-        ax.set_xlabel("Column")
-        ax.set_ylabel("Row")
         ax.set_title("Greedy Policy")
-        ax.legend(loc="upper right")
-
+        ax.legend()
         plt.tight_layout()
-        plt.show()
+    plt.show()
 
     def animate_episode_with_trail(
-            self,
-            Q_pi,
-            action_set: Optional[Sequence[Action]] = None,
-            starting_state: Optional[State] = None,
-            max_steps=500,
-            interval=150,
-    ):
+        self, Q_pi, action_set=None, get_features=None,
+        starting_state=None, max_steps=500, interval=150
+        ):
+
         action_set = action_set if action_set is not None else self.action_set
 
         states = []
@@ -214,10 +227,13 @@ class GridEnvBase(BaseEnv):
         states.append(s)
 
         for _ in range(max_steps):
-            action_idx = int(np.argmax(Q_pi[s]))
+            q_vals = get_q_values(Q_pi, s, get_features)
+            action_idx = int(np.argmax(q_vals))
+
             _, s_prime, done = self.step(action_set[action_idx])
             states.append(s_prime)
             s = s_prime
+
             if done:
                 break
 
