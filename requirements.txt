@@ -7,6 +7,7 @@ pygame
 optuna
 gymnasium
 gymnasium[other]
+gymnasium[box2d]
 wandb
 nbformat
 torch --index-url https://download.pytorch.org/whl/cu130
